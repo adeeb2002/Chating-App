@@ -1,0 +1,77 @@
+{
+  "project_info": {
+    "project_number": "150931280899",
+    "firebase_url": "https://whatsapp-5a303-default-rtdb.firebaseio.com",
+    "project_id": "whatsapp-5a303",
+    "storage_bucket": "whatsapp-5a303.appspot.com"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:150931280899:android:f6225262729c1a0bd0ea36",
+        "android_client_info": {
+          "package_name": "com.example.provider"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "150931280899-v1v29rueh0j13ldmvcq8cb49jecte7es.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCRWWlIXXWmKH-rwRdEi7BWZmAw2oeNrPg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "150931280899-m98sfo6975bn5t3cei4tj4fbrc8hetat.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:150931280899:android:59a1680ddc51a86fd0ea36",
+        "android_client_info": {
+          "package_name": "com.example.whatsapp"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "150931280899-3o7l7kkje31aoodhl594qe9mj9ki4ftd.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.whatsapp",
+            "certificate_hash": "7df43ccd6d7e5888323d6348f182c6dc85369815"
+          }
+        },
+        {
+          "client_id": "150931280899-v1v29rueh0j13ldmvcq8cb49jecte7es.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCRWWlIXXWmKH-rwRdEi7BWZmAw2oeNrPg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "150931280899-m98sfo6975bn5t3cei4tj4fbrc8hetat.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
