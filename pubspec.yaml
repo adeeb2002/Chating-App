@@ -43,6 +43,13 @@ dependencies:
   image_network: ^2.5.2
   intl: ^0.18.1
 
+  onesignal_flutter: ^5.5.4
+
+  firebase_messaging: 
+  
+  # Local Notifications
+  flutter_local_notifications: 
+
 
 dev_dependencies:
   flutter_test:

@@ -1,7 +1,10 @@
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter_riverpod/legacy.dart';
+import 'package:onesignal_flutter/onesignal_flutter.dart';
+import 'package:provider/serives/notifications.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../model/user.dart';
 
@@ -25,7 +28,10 @@ final currentUserStreamProvider = StreamProvider<AppUser?>((ref) {
 });
 
 // Provider لجلب بيانات مستخدم
-final userDataProvider = FutureProvider.family<AppUser?, String>((ref, email) async {
+final userDataProvider = FutureProvider.family<AppUser?, String>((
+  ref,
+  email,
+) async {
   final service = ref.watch(authServiceProvider);
   return await service.getUserByEmail(email);
 });
@@ -49,7 +55,11 @@ class AuthService {
   }
 
   // ✅ تسجيل الدخول
-  Future<AppUser?> login(String email, String password, BuildContext context) async {
+  Future<AppUser?> login(
+    String email,
+    String password,
+    BuildContext context,
+  ) async {
     try {
       final snapshot = await db
           .ref('users')
@@ -79,6 +89,11 @@ class AuthService {
             await updateUserStatus(userId, true);
             await _saveLoginState(true, user);
 
+            // فور نجاح تسجيل الدخول
+            onUserAuthenticated(
+              user.email,
+            ); // استخدم إيميل المستخدم المسجل حالياً
+
             return user;
           } else {
             throw Exception('كلمة المرور غير صحيحة');
@@ -88,7 +103,6 @@ class AuthService {
 
       // إذا لم يوجد المستخدم، قم بإنشاء حساب جديد
       return await register(email, password, context);
-      
     } catch (e) {
       print('❌ خطأ في تسجيل الدخول: $e');
       return null;
@@ -96,7 +110,11 @@ class AuthService {
   }
 
   // ✅ تسجيل حساب جديد
-  Future<AppUser?> register(String email, String password, BuildContext context) async {
+  Future<AppUser?> register(
+    String email,
+    String password,
+    BuildContext context,
+  ) async {
     try {
       // التحقق من عدم وجود المستخدم مسبقاً
       final existingUser = await getUserByEmail(email);
@@ -120,8 +138,10 @@ class AuthService {
       _currentUserId = newUserRef.key;
       await _saveLoginState(true, newUser);
 
+      // فور نجاح تسجيل الدخول
+      onUserAuthenticated(newUser.email); // استخدم إيميل المستخدم المسجل حالياً
+
       return newUser;
-      
     } catch (e) {
       print('❌ خطأ في التسجيل: $e');
       return null;
@@ -139,20 +159,42 @@ class AuthService {
     }
   }
 
+  // عند نجاح تسجيل الدخول أو عند فتح التطبيق والمستخدم مسجل مسبقاً
+  void onUserAuthenticated(String email) async {
+    await OneSignal.login(email); // يربط الجهاز الحالي بهذا الإيميل
+  }
+
+  // عند تسجيل الخروج
+  void onUserLogout() async {
+    await OneSignal.logout(); // يمنع وصول الإشعارات لهذا الجهاز
+  }
+
+  // حفظ FCM token عند تسجيل الدخول
+  Future<void> saveFCMToken(String userId) async {
+    try {
+      final notificationService = NotificationService();
+      await notificationService.saveToken(userId, '');
+    } catch (e) {
+      print('❌ Error saving FCM token: $e');
+    }
+  }
+
   // ✅ تسجيل الخروج
   Future<void> logout() async {
     if (_currentUserId != null) {
       await updateUserStatus(_currentUserId!, false);
     }
-    
+
     // مسح بيانات الجلسة
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('isLogin');
     await prefs.remove('userEmail');
     await prefs.remove('userId');
     await prefs.remove('userName');
-    
+
     _currentUserId = null;
+
+    onUserLogout();
     print('✅ تم تسجيل الخروج بنجاح');
   }
 
@@ -163,9 +205,8 @@ class AuthService {
         'isOnline': isOnline,
         'lastSeen': DateTime.now().millisecondsSinceEpoch,
       });
-      
+
       print('✅ تم تحديث حالة المستخدم: $isOnline');
-      
     } catch (e) {
       print('❌ خطأ في تحديث الحالة: $e');
     }
@@ -176,7 +217,7 @@ class AuthService {
     try {
       final prefs = await SharedPreferences.getInstance();
       final isLogin = prefs.getBool('isLogin') ?? false;
-      
+
       // إذا كان هناك جلسة نشطة، تحقق من صحة المستخدم
       if (isLogin) {
         final userEmail = prefs.getString('userEmail');
@@ -185,9 +226,8 @@ class AuthService {
           return user != null;
         }
       }
-      
+
       return false;
-      
     } catch (e) {
       print('❌ خطأ في التحقق من تسجيل الدخول: $e');
       return false;
@@ -197,7 +237,7 @@ class AuthService {
   // ✅ جلب مستخدم عن طريق البريد الإلكتروني
   Future<AppUser?> getUserByEmail(String email) async {
     if (email.isEmpty) return null;
-    
+
     try {
       final snapshot = await db
           .ref('users')
@@ -213,7 +253,6 @@ class AuthService {
         }
       }
       return null;
-      
     } catch (e) {
       print('❌ خطأ في جلب المستخدم: $e');
       return null;
@@ -223,7 +262,7 @@ class AuthService {
   // ✅ جلب مستخدم عن طريق ID
   Future<AppUser?> getUserById(String userId) async {
     if (userId.isEmpty) return null;
-    
+
     try {
       final snapshot = await db.ref('users').child(userId).get();
 
@@ -232,7 +271,6 @@ class AuthService {
         return AppUser.fromMap(userId, data);
       }
       return null;
-      
     } catch (e) {
       print('❌ خطأ في جلب المستخدم بالـ ID: $e');
       return null;
@@ -240,7 +278,8 @@ class AuthService {
   }
 
   // ✅ تحديث بيانات المستخدم
-  Future<void> updateUserProfile(String userId, {
+  Future<void> updateUserProfile(
+    String userId, {
     String? name,
     String? imageUrl,
   }) async {
@@ -249,10 +288,9 @@ class AuthService {
       if (name != null) updates['name'] = name;
       if (imageUrl != null) updates['imageUrl'] = imageUrl;
       updates['updatedAt'] = DateTime.now().millisecondsSinceEpoch;
-      
+
       await db.ref('users').child(userId).update(updates);
       print('✅ تم تحديث بيانات المستخدم');
-      
     } catch (e) {
       print('❌ خطأ في تحديث بيانات المستخدم: $e');
       rethrow;
@@ -260,28 +298,31 @@ class AuthService {
   }
 
   // ✅ تغيير كلمة المرور
-  Future<bool> changePassword(String userId, String oldPassword, String newPassword) async {
+  Future<bool> changePassword(
+    String userId,
+    String oldPassword,
+    String newPassword,
+  ) async {
     try {
       final snapshot = await db.ref('users').child(userId).get();
-      
+
       if (!snapshot.exists) {
         throw Exception('المستخدم غير موجود');
       }
-      
+
       final userData = Map<String, dynamic>.from(snapshot.value as Map);
-      
+
       if (userData['password'] != oldPassword) {
         throw Exception('كلمة المرور القديمة غير صحيحة');
       }
-      
+
       await db.ref('users').child(userId).update({
         'password': newPassword,
         'updatedAt': DateTime.now().millisecondsSinceEpoch,
       });
-      
+
       print('✅ تم تغيير كلمة المرور بنجاح');
       return true;
-      
     } catch (e) {
       print('❌ خطأ في تغيير كلمة المرور: $e');
       return false;
@@ -295,33 +336,36 @@ class AuthService {
       final chatsSnapshot = await db.ref('chats').get();
       if (chatsSnapshot.exists) {
         final chats = chatsSnapshot.value as Map<dynamic, dynamic>? ?? {};
-        
+
         for (var chatEntry in chats.entries) {
           final chatId = chatEntry.key.toString();
           final chatData = Map<String, dynamic>.from(chatEntry.value);
-          final participants = List<String>.from(chatData['participants'] ?? []);
-          
+          final participants = List<String>.from(
+            chatData['participants'] ?? [],
+          );
+
           if (participants.contains(userId)) {
             // إما حذف المحادثة أو إزالة المستخدم منها
             await db.ref('chats').child(chatId).update({
               'deletedFor': {
                 ...Map<String, dynamic>.from(chatData['deletedFor'] ?? {}),
                 userId: DateTime.now().millisecondsSinceEpoch,
-              }
+              },
             });
+            
           }
         }
       }
-      
+
       // حذف المستخدم
       await db.ref('users').child(userId).remove();
-      
-      // مسح الجلسة
+
+      // مسح بيانات الجلسة
       await logout();
-      
+      onUserLogout();
+
       print('✅ تم حذف الحساب بنجاح');
       return true;
-      
     } catch (e) {
       print('❌ خطأ في حذف الحساب: $e');
       return false;
@@ -343,7 +387,7 @@ final cachedUserProvider = FutureProvider<AppUser?>((ref) async {
   final userEmail = prefs.getString('userEmail');
   final userId = prefs.getString('userId');
   final userName = prefs.getString('userName');
-  
+
   if (userEmail != null && userId != null) {
     return AppUser(
       id: userId,
@@ -353,6 +397,6 @@ final cachedUserProvider = FutureProvider<AppUser?>((ref) async {
       lastSeen: DateTime.now().millisecondsSinceEpoch,
     );
   }
-  
+
   return null;
 });

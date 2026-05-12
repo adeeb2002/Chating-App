@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/Provider/chatProvider.dart';
-import 'package:provider/Provider/massegeProvder.dart';
 import 'package:provider/Provider/userProvide.dart';
 import 'package:provider/Screen/addChatScreen.dart';
 import 'package:provider/Screen/login.dart';
@@ -135,9 +134,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     } catch (e) {
       print('❌ خطأ في تسجيل الخروج: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('خطأ في تسجيل الخروج: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('خطأ في تسجيل الخروج: $e')));
       }
     }
   }
@@ -181,7 +180,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             const SizedBox(width: 8),
             const Text(
               'المحادثات',
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+              style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+              ),
             ),
           ],
         ),
@@ -255,7 +257,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         ),
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: () => _showNewChatDialog(), // ✅ استخدام الدالة المصححة
+        onPressed: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(builder: (context) => const AddChatScreen()),
+          );
+        }, // ✅ استخدام الدالة المصححة
         backgroundColor: const Color(0xFF075E54),
         child: const Icon(Icons.chat, color: Colors.white),
       ),
@@ -265,7 +272,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   // ✅ استخدام Consumer بدلاً من FutureBuilder
   Widget _buildChatItem(Chat chat, String otherEmail, String currentUserEmail) {
     final userAsync = ref.watch(userDataProvider(otherEmail));
-    
+
     return userAsync.when(
       data: (user) {
         final name = user?.displayName ?? otherEmail.split('@')[0];
@@ -324,19 +331,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           final currentUser = ref.read(appUserDataProvider);
           final currentUserId = currentUser?.id ?? currentUserEmail;
 
+          print('home: delete chat $chat.id $currentUserId');
           await chatService.deleteChatForUser(chat.id, currentUserId);
-          ref.invalidate(chatsProvider(currentUserEmail));
 
+          // ✅ تحديث القائمة فوراً
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('تم حذف المحادثة')),
-            );
+            ref.invalidate(chatsProvider(currentUserEmail));
+
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(const SnackBar(content: Text('تم حذف المحادثة')));
           }
         } catch (e) {
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('خطأ في الحذف: $e')),
-            );
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(SnackBar(content: Text('خطأ في الحذف: $e')));
             ref.invalidate(chatsProvider(currentUserEmail));
           }
         }
@@ -383,7 +393,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
               style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
             ),
             subtitle: Text(
-              chat.lastMessage.isNotEmpty ? chat.lastMessage : 'ابدأ المحادثة',
+              chat.isBlocked ?? false
+                  ? 'هذه المحادثة محظورة'
+                  : chat.lastMessage.isNotEmpty
+                  ? chat.lastMessage
+                  : 'ابدأ المحادثة',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(color: Colors.grey[600]),
@@ -393,11 +407,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
               style: const TextStyle(fontSize: 11, color: Colors.grey),
             ),
             onTap: () {
+              print(chat.isBlocked ?? false);
+              print('is');
               Navigator.push(
                 context,
                 MaterialPageRoute(
                   builder: (context) => ChatScreen(
-                    chatId: chat.id,
+                    chat: chat,
                     receiverEmail: otherEmail,
                     receiverName: name,
                   ),
@@ -491,7 +507,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           ),
           const SizedBox(height: 32),
           ElevatedButton.icon(
-            onPressed: () => _showNewChatDialog(),
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (context) => const AddChatScreen()),
+            ),
             icon: const Icon(Icons.add),
             label: const Text('محادثة جديدة'),
             style: ElevatedButton.styleFrom(
@@ -622,112 +641,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           TextButton(
             onPressed: () => Navigator.pop(context),
             child: const Text('إغلاق'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ✅ دالة إنشاء محادثة جديدة (مفعلة ومصححة)
-  void _showNewChatDialog() {
-    final emailController = TextEditingController();
-    final currentUser = ref.read(appUserDataProvider);
-
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('محادثة جديدة'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text(
-              'أدخل البريد الإلكتروني للشخص الذي تريد التحدث معه',
-              style: TextStyle(fontSize: 12, color: Colors.grey),
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: emailController,
-              decoration: const InputDecoration(
-                hintText: 'البريد الإلكتروني للمستلم',
-                prefixIcon: Icon(Icons.email),
-                border: OutlineInputBorder(),
-              ),
-              keyboardType: TextInputType.emailAddress,
-              autofocus: true,
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.pop(dialogContext);
-              emailController.dispose();
-            },
-            child: const Text('إلغاء'),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              final receiverEmail = emailController.text.trim();
-
-              if (receiverEmail.isEmpty) {
-                ScaffoldMessenger.of(dialogContext).showSnackBar(
-                  const SnackBar(content: Text('الرجاء إدخال البريد الإلكتروني')),
-                );
-                return;
-              }
-
-              if (receiverEmail == currentUser?.email) {
-                ScaffoldMessenger.of(dialogContext).showSnackBar(
-                  const SnackBar(content: Text('لا يمكنك إنشاء محادثة مع نفسك')),
-                );
-                return;
-              }
-
-              Navigator.pop(dialogContext);
-              emailController.dispose();
-
-              if (!mounted) return;
-
-              showDialog(
-                context: context,
-                barrierDismissible: false,
-                builder: (loadingContext) => const Center(
-                  child: CircularProgressIndicator(),
-                ),
-              );
-
-              try {
-                final chatService = ref.read(chatServiceProvider);
-                final chatId = await chatService.createChat(
-                  user1Email: currentUser!.email,
-                  user2Email: receiverEmail,
-                );
-
-                if (mounted) {
-                  Navigator.pop(context); // إغلاق مؤشر التحميل
-                  ref.invalidate(chatsProvider(currentUser.email));
-
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (context) => ChatScreen(
-                        chatId: chatId,
-                        receiverEmail: receiverEmail,
-                      ),
-                    ),
-                  );
-                }
-              } catch (e) {
-                if (mounted) {
-                  Navigator.pop(context); // إغلاق مؤشر التحميل
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('خطأ: $e')),
-                  );
-                }
-              }
-            },
-            child: const Text('بدء المحادثة'),
           ),
         ],
       ),

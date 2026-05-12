@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:firebase_database/firebase_database.dart';
 import '../model/chat.dart';
@@ -14,11 +17,41 @@ final chatServiceProvider = Provider<ChatService>((ref) {
   return ChatService(db);
 });
 
-// Stream Provider للمحادثات
+// ✅ Provider لمراقبة حالة الحظر في الوقت الفعلي
+final chatBlockStatusProvider = StreamProvider.family<Map<String, dynamic>?, String>((ref, chatId) {
+  final db = ref.watch(firebaseDatabaseProvider);
+  
+  final controller = StreamController<Map<String, dynamic>?>.broadcast();
+  
+  final listener = db.ref('chats').child(chatId).onValue.listen((event) {
+    final data = event.snapshot.value as Map<dynamic, dynamic>?;
+    if (data == null) {
+      controller.add(null);
+      return;
+    }
+    
+    controller.add({
+      'isBlocked': data['isBlocked'] ?? false,
+      'blockedBy': data['blockedBy'],
+      'blockedAt': data['blockedAt'],
+    });
+  });
+  
+  ref.onDispose(() {
+    listener.cancel();
+    controller.close();
+  });
+  
+  return controller.stream;
+});
+
+// Stream Provider للمحادثات - مع تحديث فوري
 final chatsProvider = StreamProvider.family<List<Chat>, String>((ref, userEmail) {
   final db = ref.watch(firebaseDatabaseProvider);
+  
+  final controller = StreamController<List<Chat>>.broadcast();
 
-  return db.ref('chats').onValue.map((event) {
+  final listener = db.ref('chats').onValue.listen((event) {
     final data = event.snapshot.value as Map<dynamic, dynamic>? ?? {};
     final List<Chat> chats = [];
 
@@ -26,6 +59,7 @@ final chatsProvider = StreamProvider.family<List<Chat>, String>((ref, userEmail)
       final chatMap = Map<String, dynamic>.from(chatData);
       final participants = List<String>.from(chatMap['participants'] ?? []);
       final deletedFor = Map<String, dynamic>.from(chatMap['deletedFor'] ?? {});
+      final clearedFor = Map<String, dynamic>.from(chatMap['clearedFor'] ?? {});
 
       if (participants.contains(userEmail) && !deletedFor.containsKey(userEmail)) {
         chats.add(Chat(
@@ -37,16 +71,24 @@ final chatsProvider = StreamProvider.family<List<Chat>, String>((ref, userEmail)
           createdAt: chatMap['createdAt'] ?? 0,
           updatedAt: chatMap['updatedAt'] ?? 0,
           deletedFor: deletedFor,
-          isDeletedChatForYou: chatMap['isDeletedChatForYou'] ?? false
-          ),
-        );
+          clearedFor: clearedFor,
+          isBlocked: chatMap['isBlocked'] ?? false,
+          blockedBy: chatMap['blockedBy'],
+          isDeletedChatForYou: deletedFor.containsKey(userEmail),
+        ));
       }
     });
 
-    // ترتيب حسب آخر تحديث
     chats.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
-    return chats;
+    controller.add(chats);
   });
+
+  ref.onDispose(() {
+    listener.cancel();
+    controller.close();
+  });
+
+  return controller.stream;
 });
 
 class ChatService {
@@ -89,8 +131,20 @@ class ChatService {
       final chatId = _generateChatId(user1Email, user2Email);
       final chatRef = db.ref('chats').child(chatId);
       final snapshot = await chatRef.get();
-      
+
       if (snapshot.exists) {
+        final chatData = snapshot.value as Map<dynamic, dynamic>?;
+        final deletedFor = Map<String, dynamic>.from(chatData?['deletedFor'] ?? {});
+
+        if (deletedFor.containsKey(user1Email)) {
+          deletedFor.remove(user1Email);
+          await chatRef.update({
+            'deletedFor': deletedFor,
+            'updatedAt': DateTime.now().millisecondsSinceEpoch,
+          });
+          print('✅ تم استعادة المحادثة للمستخدم $user1Email');
+        }
+
         print('✅ المحادثة موجودة مسبقاً: $chatId');
         return chatId;
       }
@@ -106,6 +160,8 @@ class ChatService {
         'lastMessageSender': user1Email,
         'deletedFor': {},
         'clearedFor': {},
+        'isBlocked': false,
+        'blockedBy': null,
       });
 
       print('✅ تم إنشاء المحادثة بنجاح: $chatId');
@@ -128,7 +184,57 @@ class ChatService {
     }
   }
 
-  // ✅ مسح جميع رسائل المحادثة (مع الاحتفاظ بالمحادثة)
+  // ✅ دالة لحظر المستخدم
+  Future<void> toggleBlockedStates(String chatId, String myId) async {
+    try {
+      final chatRef = db.ref('chats').child(chatId);
+      await chatRef.update({
+        'isBlocked': true,
+        'blockedBy': myId,
+        'blockedAt': DateTime.now().millisecondsSinceEpoch,
+        'updatedAt': DateTime.now().millisecondsSinceEpoch,
+      });
+      print('✅ تم حظر المستخدم بواسطة $myId');
+    } catch (e) {
+      print('❌ خطأ في حظر المستخدم: $e');
+      rethrow;
+    }
+  }
+
+  // ✅ دالة لإلغاء حظر المستخدم
+  Future<void> toggleUnblockedStates(String chatId, String myId) async {
+    try {
+      final chatRef = db.ref('chats').child(chatId);
+      await chatRef.update({
+        'isBlocked': false,
+        'blockedBy': null,
+        'unblockedAt': DateTime.now().millisecondsSinceEpoch,
+        'updatedAt': DateTime.now().millisecondsSinceEpoch,
+      });
+      print('✅ تم إلغاء حظر المستخدم بواسطة $myId');
+    } catch (e) {
+      print('❌ خطأ في إلغاء حظر المستخدم: $e');
+      rethrow;
+    }
+  }
+
+  // التحقق من حالة حذف المحادثة
+  Future<bool> isChatDeletedForUser(String chatId, String userId) async {
+    try {
+      final snapshot = await db
+          .ref('chats')
+          .child(chatId)
+          .child('deletedFor')
+          .child(userId)
+          .get();
+      return snapshot.exists;
+    } catch (e) {
+      print('❌ خطأ في التحقق من حالة الحذف: $e');
+      return false;
+    }
+  }
+
+  // مسح جميع رسائل المحادثة
   Future<void> clearChat(String chatId) async {
     try {
       final chatRef = db.ref('chats').child(chatId);
@@ -138,11 +244,9 @@ class ChatService {
         throw Exception('المحادثة غير موجودة');
       }
 
-      // حذف جميع الرسائل
       final messagesRef = chatRef.child('messages');
       await messagesRef.remove();
 
-      // تحديث بيانات المحادثة الرئيسية
       final now = DateTime.now().millisecondsSinceEpoch;
       await chatRef.update({
         'lastMessage': '',
@@ -160,39 +264,11 @@ class ChatService {
     }
   }
 
-  // ✅ مسح رسائل المحادثة لمستخدم معين فقط
-  Future<void> clearChatForUser(String chatId, String userId) async {
-    try {
-      final chatRef = db.ref('chats').child(chatId);
-      final snapshot = await chatRef.get();
-
-      if (!snapshot.exists) {
-        throw Exception('المحادثة غير موجودة');
-      }
-
-      final chatData = snapshot.value as Map<dynamic, dynamic>?;
-      if (chatData == null) {
-        throw Exception('بيانات المحادثة غير صالحة');
-      }
-
-      final clearedFor = Map<String, dynamic>.from(chatData['clearedFor'] ?? {});
-      clearedFor[userId] = DateTime.now().millisecondsSinceEpoch;
-
-      await chatRef.update({
-        'clearedFor': clearedFor,
-        'updatedAt': DateTime.now().millisecondsSinceEpoch,
-      });
-
-      print('✅ تم مسح رسائل المحادثة للمستخدم $userId');
-    } catch (e) {
-      print('❌ خطأ في مسح رسائل المحادثة للمستخدم: $e');
-      rethrow;
-    }
-  }
-
-  // ✅ حذف محادثة لمستخدم معين (إخفاء المحادثة من المستخدم)
+  // حذف محادثة لمستخدم معين
   Future<void> deleteChatForUser(String chatId, String userId) async {
     try {
+      print('🔍 بدء حذف المحادثة للمستخدم: chatId=$chatId, userId=$userId');
+
       final chatRef = db.ref('chats').child(chatId);
       final snapshot = await chatRef.get();
 
@@ -213,14 +289,14 @@ class ChatService {
         'updatedAt': DateTime.now().millisecondsSinceEpoch,
       });
 
-      print('✅ تم حذف المحادثة للمستخدم $userId');
+      print('✅ تم حذف المحادثة بنجاح للمستخدم $userId');
     } catch (e) {
       print('❌ خطأ في حذف المحادثة للمستخدم: $e');
       rethrow;
     }
   }
 
-  // ✅ حذف المحادثة بالكامل من قاعدة البيانات (للمسؤول فقط)
+  // حذف المحادثة بالكامل
   Future<void> deleteChatComplete(String chatId) async {
     try {
       final chatRef = db.ref('chats').child(chatId);
@@ -238,27 +314,7 @@ class ChatService {
     }
   }
 
-  // ✅ دالة موحدة لحذف المحادثة (مصححة)
-  Future<void> deleteChat(String chatId, {bool forEveryone = false}) async {
-    try {
-      if (chatId.isEmpty) {
-        throw Exception('معرف المحادثة لا يمكن أن يكون فارغاً');
-      }
-
-      if (forEveryone) {
-        await deleteChatComplete(chatId);
-      } else {
-        // يتم تمرير userId من الخارج
-        print('⚠️ يرجى استخدام deleteChatForUser بدلاً من هذه الدالة');
-        throw Exception('يرجى تحديد userId للمستخدم');
-      }
-    } catch (e) {
-      print('❌ خطأ في حذف المحادثة: $e');
-      rethrow;
-    }
-  }
-
-  // ✅ استعادة محادثة محذوفة لمستخدم معين
+  // استعادة محادثة محذوفة
   Future<void> restoreDeletedChat(String chatId, String userId) async {
     try {
       final chatRef = db.ref('chats').child(chatId);
@@ -274,7 +330,7 @@ class ChatService {
       }
 
       final deletedFor = Map<String, dynamic>.from(chatData['deletedFor'] ?? {});
-      
+
       if (deletedFor.containsKey(userId)) {
         deletedFor.remove(userId);
         await chatRef.update({
@@ -282,8 +338,6 @@ class ChatService {
           'updatedAt': DateTime.now().millisecondsSinceEpoch,
         });
         print('✅ تم استعادة المحادثة للمستخدم $userId');
-      } else {
-        print('⚠️ المحادثة غير محذوفة لهذا المستخدم');
       }
     } catch (e) {
       print('❌ خطأ في استعادة المحادثة: $e');
@@ -291,7 +345,7 @@ class ChatService {
     }
   }
 
-  // ✅ دالة للحصول على البريد الإلكتروني من chatId
+  // استخراج البريد الإلكتروني من chatId
   String extractEmailFromChatId(String chatId, String currentUserEmail) {
     final parts = chatId.split('_');
     for (var part in parts) {
@@ -316,7 +370,7 @@ class ChatService {
     return '';
   }
 
-  // ✅ الحصول على جميع محادثات المستخدم (بما فيها المحذوفة - اختياري)
+  // الحصول على جميع محادثات المستخدم
   Future<List<Chat>> getAllUserChats(String userEmail, {bool includeDeleted = false}) async {
     try {
       final snapshot = await db.ref('chats').get();
@@ -339,9 +393,11 @@ class ChatService {
               createdAt: chatMap['createdAt'] ?? 0,
               updatedAt: chatMap['updatedAt'] ?? 0,
               deletedFor: deletedFor,
-              isDeletedChatForYou: chatMap['isDeletedChatForYou'] ?? false
-              ),
-            );
+              clearedFor: Map<String, dynamic>.from(chatMap['clearedFor'] ?? {}),
+              isBlocked: chatMap['isBlocked'] ?? false,
+              blockedBy: chatMap['blockedBy'],
+              isDeletedChatForYou: deletedFor.containsKey(userEmail),
+            ));
           }
         }
       });

@@ -1,4 +1,3 @@
-// ChatScreen.dart - الكود الكامل والمصصح
 import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -11,13 +10,13 @@ import '../model/massege.dart';
 import '../model/user.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
-  final String chatId;
+  final Chat chat;
   final String receiverEmail;
   final String? receiverName;
 
   const ChatScreen({
     super.key,
-    required this.chatId,
+    required this.chat,
     required this.receiverEmail,
     this.receiverName,
   });
@@ -33,6 +32,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   bool _isSending = false;
   bool _isFirstLoad = true;
 
+  // ✅ متغيرات لتتبع حالة الحظر الفعلية
+  bool _isBlocked = false;
+  String? _blockedBy;
+
   @override
   bool get wantKeepAlive => true;
 
@@ -40,6 +43,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   void initState() {
     super.initState();
     _markMessagesAsRead();
+    // ✅ لا نستخدم ref.listen هنا
   }
 
   @override
@@ -49,13 +53,31 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     super.dispose();
   }
 
+  // ✅ دالة تحديث حالة الحظر - تستخدم في build
+  void _updateBlockStatus(Map<String, dynamic>? status) {
+    if (mounted) {
+      final newIsBlocked = status?['isBlocked'] == true;
+      final newBlockedBy = status?['blockedBy'];
+
+      if (_isBlocked != newIsBlocked || _blockedBy != newBlockedBy) {
+        setState(() {
+          _isBlocked = newIsBlocked;
+          _blockedBy = newBlockedBy;
+        });
+        print(
+          '🔄 تحديث حالة الحظر: isBlocked=$_isBlocked, blockedBy=$_blockedBy',
+        );
+      }
+    }
+  }
+
   Future<void> _markMessagesAsRead() async {
     final currentUser = ref.read(appUserDataProvider);
     if (currentUser != null && currentUser.email.isNotEmpty) {
       try {
         await ref
             .read(messageServiceProvider)
-            .markMessagesAsRead(widget.chatId, currentUser.email);
+            .markMessagesAsRead(widget.chat.id, currentUser.email);
       } catch (e) {
         print('❌ خطأ في تحديث حالة القراءة: $e');
       }
@@ -78,6 +100,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   Future<void> _sendMessage() async {
     final text = _messageController.text.trim();
     final currentUser = ref.read(appUserDataProvider);
+
+    // ✅ استخدام المتغيرات المحدثة لحالة الحظر
+    final isUserBlocked = _isBlocked && _blockedBy == currentUser?.email;
+
+    if (isUserBlocked) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('لا يمكنك إرسال رسالة، تم حظر هذا المستخدم'),
+          backgroundColor: Colors.red,
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
 
     if (text.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -116,11 +152,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       senderUser: currentUser.email,
       resevUser: widget.receiverEmail,
       body: text,
-      chatId: widget.chatId,
+      chatId: widget.chat.id,
     );
 
     try {
-      await ref.read(messageServiceProvider).sendMessage(message);
+      await ref.read(messageServiceProvider).sendMessage(message,ref);
       _messageController.clear();
       _scrollToBottom();
     } catch (e) {
@@ -163,16 +199,41 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   Widget build(BuildContext context) {
     super.build(context);
 
-    final messagesAsync = ref.watch(messagesProvider(widget.chatId));
+    final messagesAsync = ref.watch(messagesProvider(widget.chat.id));
     final currentUser = ref.watch(appUserDataProvider);
     final receiverData = ref.watch(userDataProvider(widget.receiverEmail));
+
+    // ✅ مراقبة حالة الحظر من داخل build
+    final blockStatus = ref.watch(chatBlockStatusProvider(widget.chat.id));
+
+    // ✅ تحديث الحالة المحلية عند تغيير البيانات
+    blockStatus.whenData((status) {
+      if (mounted) {
+        final newIsBlocked = status?['isBlocked'] == true;
+        final newBlockedBy = status?['blockedBy'];
+
+        if (_isBlocked != newIsBlocked || _blockedBy != newBlockedBy) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) {
+              setState(() {
+                _isBlocked = newIsBlocked;
+                _blockedBy = newBlockedBy;
+              });
+            }
+          });
+        }
+      }
+    });
 
     final receiverName =
         widget.receiverName ?? (widget.receiverEmail.split('@').first);
 
+    // ✅ التحقق من الحظر باستخدام المتغيرات المحدثة
+    final isUserBlocked = _isBlocked && _blockedBy == currentUser?.email;
+
     return Scaffold(
       backgroundColor: const Color(0xFFECE5DD),
-      appBar: _buildAppBar(receiverName, receiverData, widget.chatId),
+      appBar: _buildAppBar(receiverName, receiverData, isUserBlocked),
       body: Column(
         children: [
           Expanded(
@@ -236,7 +297,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
               error: (error, stackTrace) => _buildErrorState(error.toString()),
             ),
           ),
-          _buildMessageInput(),
+          _buildMessageInput(isUserBlocked, widget.chat.id, currentUser!.id!),
         ],
       ),
     );
@@ -245,7 +306,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   PreferredSizeWidget _buildAppBar(
     String receiverName,
     AsyncValue<AppUser?> receiverData,
-    String chatId,
+    bool isUserBlocked,
   ) {
     return AppBar(
       backgroundColor: const Color(0xFF075E54),
@@ -330,23 +391,29 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                   ),
                   overflow: TextOverflow.ellipsis,
                 ),
-                receiverData.when(
-                  data: (user) => Text(
-                    user?.isOnline == true ? 'متصل الآن' : 'غير متصل',
-                    style: const TextStyle(
-                      color: Color(0xFFB0BEC5),
-                      fontSize: 12,
+                if (isUserBlocked)
+                  const Text(
+                    'تم حظر هذا المستخدم',
+                    style: TextStyle(color: Colors.red, fontSize: 11),
+                  )
+                else
+                  receiverData.when(
+                    data: (user) => Text(
+                      user?.isOnline == true ? 'متصل الآن' : 'غير متصل',
+                      style: const TextStyle(
+                        color: Color(0xFFB0BEC5),
+                        fontSize: 12,
+                      ),
+                    ),
+                    loading: () => const Text(
+                      'جاري التحميل...',
+                      style: TextStyle(color: Color(0xFFB0BEC5), fontSize: 12),
+                    ),
+                    error: (_, __) => const Text(
+                      'غير معروف',
+                      style: TextStyle(color: Color(0xFFB0BEC5), fontSize: 12),
                     ),
                   ),
-                  loading: () => const Text(
-                    'جاري التحميل...',
-                    style: TextStyle(color: Color(0xFFB0BEC5), fontSize: 12),
-                  ),
-                  error: (_, __) => const Text(
-                    'غير معروف',
-                    style: TextStyle(color: Color(0xFFB0BEC5), fontSize: 12),
-                  ),
-                ),
               ],
             ),
           ),
@@ -361,17 +428,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
           icon: const Icon(Icons.call, color: Colors.white),
           onPressed: () => _showComingSoonMessage(),
         ),
-        PopupMenuButton(
+        PopupMenuButton<String>(
           icon: const Icon(Icons.more_vert, color: Colors.white),
+          onSelected: (value) => _handlePopupMenu(value),
           itemBuilder: (context) => [
             const PopupMenuItem(value: 'clear', child: Text('مسح المحادثة')),
-            const PopupMenuItem(value: 'block', child: Text('حظر المستخدم')),
+            PopupMenuItem(
+              value: 'block',
+              child: Text(isUserBlocked ? 'إلغاء الحظر' : 'حظر المستخدم'),
+            ),
             const PopupMenuItem(
               value: 'report',
               child: Text('الإبلاغ عن محتوى غير مناسب'),
             ),
           ],
-          onSelected: _handlePopupMenu,
         ),
       ],
     );
@@ -391,9 +461,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       case 'clear':
         _showClearChatDialog();
         break;
-      case 'delete':
-        _showDeleteChatDialog(widget.chatId); 
-        break;
       case 'block':
         _showBlockUserDialog();
         break;
@@ -403,103 +470,36 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     }
   }
 
- // دالة مسح المحادثة المحسنة
-Future<void> _showClearChatDialog() async {
-  final shouldClear = await showDialog<bool>(
-    context: context,
-    builder: (context) => AlertDialog(
-      title: const Text('مسح المحادثة'),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const Text('هل أنت متأكد من مسح جميع الرسائل؟'),
-          const SizedBox(height: 16),
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.orange[50],
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: const Row(
-              children: [
-                Icon(Icons.warning, color: Colors.orange),
-                SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    'سيتم مسح جميع الرسائل ولن تتمكن من استعادتها',
-                    style: TextStyle(fontSize: 12, color: Colors.orange),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 8),
-          
-        ],
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context, false),
-          child: const Text('إلغاء'),
-        ),
-        ElevatedButton(
-          onPressed: () => Navigator.pop(context, true),
-          style: ElevatedButton.styleFrom(
-            backgroundColor:  Colors.red ,
-          ),
-          child: const Text('مسح'),
-        ),
-      ],
-    ),
-  );
-  
-  if (shouldClear == true) {
-    // إظهار مؤشر تحميل
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => const Center(
-        child: CircularProgressIndicator(),
-      ),
-    );
-    
-    try {
-
-      // مسح للجميع - حذف جميع الرسائل فعلياً
-        await ref.read(chatServiceProvider).cleerChat(widget.chatId);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('تم مسح جميع الرسائل للجميع')),
-        );
-      
-      // تحديث قائمة الرسائل
-      ref.invalidate(messagesProvider(widget.chatId));
-      
-      // إغلاق مؤشر التحميل
-      if (mounted) {
-        Navigator.pop(context); // إغلاق مؤشر التحميل
-        
-        // العودة إلى الشاشة السابقة
-        Navigator.pop(context);
-      }
-      
-    } catch (e) {
-      if (mounted) {
-        Navigator.pop(context); // إغلاق مؤشر التحميل
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('خطأ في مسح الرسائل: $e')),
-        );
-      }
-    }
-  }
-}
-
-  Future<void> _showBlockUserDialog() async {
-    final shouldBlock = await showDialog<bool>(
+  Future<void> _showClearChatDialog() async {
+    final shouldClear = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('حظر المستخدم'),
-        content: Text(
-          'هل أنت متأكد من حظر ${widget.receiverEmail.split('@').first}؟',
+        title: const Text('مسح المحادثة'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('هل أنت متأكد من مسح جميع الرسائل؟'),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.orange[50],
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.warning, color: Colors.orange),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'سيتم مسح جميع الرسائل ولن تتمكن من استعادتها',
+                      style: TextStyle(fontSize: 12, color: Colors.orange),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
         actions: [
           TextButton(
@@ -509,16 +509,135 @@ Future<void> _showClearChatDialog() async {
           ElevatedButton(
             onPressed: () => Navigator.pop(context, true),
             style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-            child: const Text('حظر'),
+            child: const Text('مسح'),
           ),
         ],
       ),
     );
 
-    if (shouldBlock == true) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('تم حظر المستخدم')));
+    if (shouldClear == true) {
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => const Center(child: CircularProgressIndicator()),
+      );
+
+      try {
+        await ref.read(chatServiceProvider).clearChat(widget.chat.id);
+
+        if (mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('تم مسح جميع الرسائل')));
+          ref.invalidate(messagesProvider(widget.chat.id));
+          Navigator.pop(context); // إغلاق مؤشر التحميل
+          Navigator.pop(context); // العودة للشاشة السابقة
+        }
+      } catch (e) {
+        if (mounted) {
+          Navigator.pop(context);
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('خطأ في مسح الرسائل: $e')));
+        }
+      }
+    }
+  }
+
+  Future<void> _showBlockUserDialog() async {
+    final currentUser = ref.read(appUserDataProvider);
+    if (currentUser == null) return;
+
+    final isCurrentlyBlocked = _isBlocked && _blockedBy == currentUser.email;
+
+    if (isCurrentlyBlocked) {
+      final shouldUnblock = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('إلغاء حظر المستخدم'),
+          content: Text(
+            'هل أنت متأكد من إلغاء حظر ${widget.receiverEmail.split('@').first}؟',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('إلغاء'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context, true),
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+              child: const Text('إلغاء الحظر'),
+            ),
+          ],
+        ),
+      );
+
+      if (shouldUnblock == true) {
+        try {
+          await ref
+              .read(chatServiceProvider)
+              .toggleUnblockedStates(widget.chat.id, currentUser.email);
+
+          ref.invalidate(chatBlockStatusProvider(widget.chat.id));
+          ref.invalidate(messagesProvider(widget.chat.id));
+
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('تم إلغاء حظر المستخدم')),
+            );
+          }
+        } catch (e) {
+          if (mounted) {
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(SnackBar(content: Text('خطأ: $e')));
+          }
+        }
+      }
+    } else {
+      final shouldBlock = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('حظر المستخدم'),
+          content: Text(
+            'هل أنت متأكد من حظر ${widget.receiverEmail.split('@').first}؟\n\nلن تتمكن من إرسال أو استقبال رسائل من هذا المستخدم.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('إلغاء'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context, true),
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+              child: const Text('حظر'),
+            ),
+          ],
+        ),
+      );
+
+      if (shouldBlock == true) {
+        try {
+          await ref
+              .read(chatServiceProvider)
+              .toggleBlockedStates(widget.chat.id, currentUser.email);
+
+          ref.invalidate(chatBlockStatusProvider(widget.chat.id));
+          ref.invalidate(messagesProvider(widget.chat.id));
+
+          if (mounted) {
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(const SnackBar(content: Text('تم حظر المستخدم')));
+          }
+        } catch (e) {
+          if (mounted) {
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(SnackBar(content: Text('خطأ: $e')));
+          }
+        }
+      }
     }
   }
 
@@ -678,7 +797,7 @@ Future<void> _showClearChatDialog() async {
           const SizedBox(height: 16),
           ElevatedButton.icon(
             onPressed: () {
-              ref.invalidate(messagesProvider(widget.chatId));
+              ref.invalidate(messagesProvider(widget.chat.id));
             },
             icon: const Icon(Icons.refresh),
             label: const Text('إعادة المحاولة'),
@@ -804,7 +923,66 @@ Future<void> _showClearChatDialog() async {
     }
   }
 
-  Widget _buildMessageInput() {
+  Widget _buildMessageInput(bool isUserBlocked, String chatId, String myId) {
+    if (isUserBlocked) {
+      return Container(
+        height: 80,
+        width: double.infinity,
+        color: Colors.grey[100],
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    'تم حظر هذه المحادثة',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'لن تتمكن من إرسال أو استقبال رسائل من ${widget.receiverEmail.split('@').first}',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: Colors.grey,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+              InkWell(
+                onTap: () {
+                  ref
+                      .read(chatServiceProvider)
+                      .toggleUnblockedStates(chatId, myId);
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 8,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.green,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Text(
+                    'إلغاء الحظر',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
@@ -879,25 +1057,5 @@ Future<void> _showClearChatDialog() async {
         ),
       ),
     );
-  }
-
-  void _showDeleteChatDialog(String chatId) async {
-    try {
-      final refChat = FirebaseDatabase.instance.ref('chats').child(chatId);
-      final snapShot = await refChat.get();
-
-      if (!snapShot.exists) return print('حدث خطا في جلب بيانات المحادثة');
-
-      if (snapShot.exists) {
-        await refChat.remove();
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('تم حذف المحادثة بالكامل')));
-      }
-    } catch (e) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('حدث خطأ في عملية الحذف')));
-    }
   }
 }

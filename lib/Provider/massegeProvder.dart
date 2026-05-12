@@ -1,7 +1,19 @@
+import 'dart:convert';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter_riverpod/legacy.dart';
+import 'package:http/http.dart' as http;
+import 'package:provider/serives/fcm_service.dart';
 import '../model/massege.dart';
+
+
+// معرفات OneSignal (يفضل وضعها في ملف ثوابت)
+  final String _appId = "666e08c7-44ca-4a94-852c-4e32388a4b43";
+  final String _restApiKey = "os_v2_app_mzxarr2ezjfjjbjmjyzdrcsliowb5x5l3lhucjmyexdwsqcvrieqlz4erscgaerzlx4wdc35qxtcpjqvayemw6ruw6asua545mliodq"; // احصل عليه من OneSignal Settings > Keys & IDs
+
+// ✅ تحديث currentUserEmailProvider ليشمل userId
+final currentUserProvider = StateProvider<String?>((ref) => null);
 
 final firebaseDatabaseProvider = Provider<FirebaseDatabase>((ref) {
   return FirebaseDatabase.instance;
@@ -33,6 +45,38 @@ final messagesProvider = StreamProvider.family<List<Massege>, String>((ref, chat
   });
 });
 
+// دالة إرسال الإشعار
+Future<void> _sendNotification({
+    required String targetEmail,
+    required String title,
+    required String message,
+  }) async {
+    try {
+      final response = await http.post(
+        Uri.parse('https://onesignal.com/api/v1/notifications'),
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Authorization': 'Basic $_restApiKey',
+        },
+        body: json.encode({
+          'app_id': _appId,
+          // نستخدم الإيميل كمعرف للمستلم
+          'include_external_user_ids': [targetEmail], 
+          'headings': {'en': title, 'ar': title},
+          'contents': {'en': message, 'ar': message},
+          'priority': 10,
+        }),
+      );
+
+      if (response.statusCode == 200) {
+        print("✅ تم إرسال الإشعار للمستخدم بنجاح");
+      }
+    } catch (e) {
+      print("❌ خطأ في إرسال الإشعار: $e");
+    }
+  }
+
+
 void _markUnreadMessages(
   FirebaseDatabase db,
   String chatId,
@@ -59,7 +103,7 @@ class MessageService {
   
   MessageService(this.db);
   
-  Future<void> sendMessage(Massege message) async {
+  Future<void> sendMessage(Massege message,WidgetRef ref) async {
     if (!message.isValid) {
       throw Exception('بيانات الرسالة غير صالحة');
     }
@@ -79,6 +123,13 @@ class MessageService {
         'lastMessageSender': message.senderUser,
         'updatedAt': message.timestamp,
       });
+
+      // ثانياً: إرسال الإشعار فوراً بعد نجاح الحفظ
+    await _sendNotification(
+      targetEmail: message.resevUser,
+      title: "رسالة جديدة من ${message.senderUser.split('@').first}",
+      message: message.body,
+    );
       
     } catch (e) {
       print('❌ خطأ في إرسال الرسالة: $e');
